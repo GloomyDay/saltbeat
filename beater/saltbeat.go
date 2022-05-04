@@ -53,7 +53,7 @@ func (bt *Saltbeat) Setup(b *beat.Beat) error {
 	}
 
 	logp.Info("Opening socket %s", bt.config.MasterEventPub)
-	bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.config.MasterEventPub, "unix"})
+	bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{Name: bt.config.MasterEventPub, Net: "unix"})
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func (bt *Saltbeat) Setup(b *beat.Beat) error {
 					logp.Debug("message", "EOF, reconnecting")
 					bt.socketConnection.Close()
 
-					bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.config.MasterEventPub, "unix"})
+					bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{Name: bt.config.MasterEventPub, Net: "unix"})
 					if err != nil {
 						return
 					}
