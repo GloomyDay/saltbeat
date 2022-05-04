@@ -7,61 +7,53 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"net"
+	"bytes"
 
 	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
-	"github.com/elastic/beats/libbeat/publisher"
 
-	"bytes"
-	"net"
 
-	"github.com/martinhoefling/saltbeat/config"
+	"github.com/GloomyDay/saltbeat/config"
 	"github.com/ugorji/go/codec"
 )
 
+
 type Saltbeat struct {
-	beatConfig       *config.Config
-	done             chan struct{}
+	done   chan struct{}
+	config config.Config
+	client beat.Client
 	messages         chan map[interface{}]interface{}
 	socketConnection *net.UnixConn
-	client           publisher.Client
 }
 
-// Creates beater
-func New() *Saltbeat {
-	logp.Debug("beater", "Creating new beater")
-	return &Saltbeat{
-		done:     make(chan struct{}),
+
+func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
+	c := config.DefaultConfig
+	if err := cfg.Unpack(&c); err != nil {
+		return nil, fmt.Errorf("Error reading config file: %v", err)
+	}
+
+	bt := &Saltbeat{
+		done:   make(chan struct{}),
+		config: c,
 		messages: make(chan map[interface{}]interface{}),
 	}
-}
-
-/// *** Beater interface methods ***///
-
-func (bt *Saltbeat) Config(b *beat.Beat) error {
-	logp.Debug("beater", "Configuring beater")
-
-	// Load beater beatConfig
-	err := b.RawConfig.Unpack(&bt.beatConfig)
-	if err != nil {
-		return fmt.Errorf("Error reading config file: %v", err)
-	}
-
-	return nil
+	return bt, nil
 }
 
 func (bt *Saltbeat) Setup(b *beat.Beat) error {
 	logp.Debug("beater", "Setting up beater")
 	// Setting default period if not set
-	if bt.beatConfig.Saltbeat.MasterEventPub == "" {
-		bt.beatConfig.Saltbeat.MasterEventPub = "/var/run/salt/master/master_event_pub.ipc"
-	}
-	bt.client = b.Publisher.Connect()
-
 	var err error
-	logp.Info("Opening socket %s", bt.beatConfig.Saltbeat.MasterEventPub)
-	bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.beatConfig.Saltbeat.MasterEventPub, "unix"})
+	bt.client, err = b.Publisher.Connect()
+	if err != nil {
+		return err
+	}
+
+	logp.Info("Opening socket %s", bt.config.MasterEventPub)
+	bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.config.MasterEventPub, "unix"})
 	if err != nil {
 		return err
 	}
@@ -229,7 +221,6 @@ func parseMessage(handle codec.MsgpackHandle, message map[interface{}]interface{
 func (bt *Saltbeat) Run(b *beat.Beat) error {
 	logp.Info("saltbeat is running! Hit CTRL-C to stop it.")
 
-	var err error
 	var handle codec.MsgpackHandle
 	handle.MapType = reflect.TypeOf(map[string]interface{}(nil))
 	handle.RawToString = true
@@ -241,26 +232,22 @@ func (bt *Saltbeat) Run(b *beat.Beat) error {
 		case message := <-bt.messages:
 			tag, payload := parseMessage(handle, message)
 			logp.Debug("publish", "Publishing event")
-
-			event := common.MapStr{
-				"@timestamp": common.Time(time.Now()),
-				"type":       b.Name,
-				"tag":        tag,
-				"payload":    payload,
+			
+			event := beat.Event{
+				Timestamp: time.Now(),
+				Fields: common.MapStr{
+					"type":    b.Info.Name,
+					"tag":        tag,
+					"payload":    payload,
+				},
 			}
-
-			ok := bt.client.PublishEvent(event)
-			if !ok {
-				logp.Debug("publish", "Cannot publish event")
-				logp.WTF(err.Error())
-			}
-			logp.Debug("publish", "Published")
+			bt.client.Publish(event)
 		}
 	}
 }
 
 func (bt *Saltbeat) Cleanup(b *beat.Beat) error {
-	logp.Info("Closing socket %s", bt.beatConfig.Saltbeat.MasterEventPub)
+	logp.Info("Closing socket %s", bt.config.MasterEventPub)
 	bt.socketConnection.Close()
 	return nil
 }
