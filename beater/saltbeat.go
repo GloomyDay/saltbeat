@@ -76,7 +76,7 @@ func (bt *Saltbeat) Setup(b *beat.Beat) error {
 					logp.Debug("message", "EOF, reconnecting")
 					bt.socketConnection.Close()
 
-					bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.beatConfig.Saltbeat.MasterEventPub, "unix"})
+					bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.config.MasterEventPub, "unix"})
 					if err != nil {
 						return
 					}

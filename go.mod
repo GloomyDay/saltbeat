@@ -3,7 +3,7 @@ module saltbeat
 go 1.18
 
 require (
-	github.com/GloomyDay/saltbeat v0.1.2
+	github.com/GloomyDay/saltbeat v0.2.0
 	github.com/elastic/beats v7.6.2+incompatible
 	github.com/ugorji/go/codec v1.2.7
 )
