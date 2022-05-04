@@ -1,4 +1,4 @@
-module saltbeat
+module github.com/GloomyDay/saltbeat
 
 go 1.18
 
