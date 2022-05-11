@@ -139,23 +139,23 @@ func (bt *Saltbeat) Run(b *beat.Beat) error {
 				skipMessage := false
 				resultList := strings.SplitN(string(message["body"].([]uint8)), "\n\n", 2)
 				tag := resultList[0]
-				for i, s := range bt.config.tagBlackList {
+				for _, s := range bt.config.TagBlackList {
 					if strings.Contains(tag, s){
 						skipMessage = true
 						break
 					}  
 				}
 				if skipMessage{
+					logp.Debug("message", fmt.Sprintf("Found blacklisted message with tag: %s ", tag))
 					continue
 				}
 				byteResult := []byte(resultList[1])
 				_ = msgpack.Unmarshal(byteResult, &data)
 				// Clear the return so we don't show passwords
-				logp.Debug("message", fmt.Sprintf("return was message: \ndata: %s\n", data["return"]))
 				data["return"] = ""
 				// Drop public keys ( garbage )
 				data["pub"] = ""
-				logp.Debug("message", fmt.Sprintf("Decoded message: (Tag : %s \ndata: %s\n", tag, data))
+				logp.Debug("message", fmt.Sprintf("Decoded message: \nTag : %s \ndata: %s\n", tag, data))
 				
 				logp.Debug("publish", "Publishing event")
 				event := beat.Event{

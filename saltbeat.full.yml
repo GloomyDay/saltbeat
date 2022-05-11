@@ -137,15 +137,16 @@ output.elasticsearch:
   # A template is used to set the mapping in Elasticsearch
   # By default template loading is enabled and the template is loaded.
   # These settings can be adjusted to load your own template or overwrite existing ones
-
+  
+  ## TEMPLATE MAY BE BROKEN , tested without template
   # Template name. By default the template name is saltbeat.
-  template.name: "saltbeat"
+  # template.name: "saltbeat"
 
-  # Path to template file
-  template.path: "saltbeat.template.json"
+  # # Path to template file
+  # template.path: "saltbeat.template.json"
 
-  # Overwrite existing template
-  template.overwrite: false
+  # # Overwrite existing template
+  # template.overwrite: false
 
   # TLS configuration. By default is off.
   # List of root certificates for HTTPS server verifications
