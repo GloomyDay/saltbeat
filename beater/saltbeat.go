@@ -1,271 +1,183 @@
 package beater
 
 import (
-	"encoding/json"
 	"fmt"
-	"reflect"
-	"strconv"
-	"strings"
+	"net"
 	"time"
 
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/common"
-	"github.com/elastic/beats/libbeat/logp"
-	"github.com/elastic/beats/libbeat/publisher"
+	// "strconv"
 
-	"bytes"
-	"net"
+	"io"
+	"strings"
 
-	"github.com/martinhoefling/saltbeat/config"
-	"github.com/ugorji/go/codec"
+	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/common"
+	"github.com/elastic/beats/v7/libbeat/logp"
+
+	"github.com/GloomyDay/saltbeat/config"
+	"github.com/vmihailenco/msgpack"
 )
 
+var socketError error
+
 type Saltbeat struct {
-	beatConfig       *config.Config
-	done             chan struct{}
-	messages         chan map[interface{}]interface{}
+	done   chan struct{}
+	config config.Config
+	client beat.Client
+	messages         chan map[string]interface{}
 	socketConnection *net.UnixConn
-	client           publisher.Client
 }
 
-// Creates beater
-func New() *Saltbeat {
-	logp.Debug("beater", "Creating new beater")
-	return &Saltbeat{
-		done:     make(chan struct{}),
-		messages: make(chan map[interface{}]interface{}),
+
+func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
+	c := config.DefaultConfig
+	if err := cfg.Unpack(&c); err != nil {
+		return nil, fmt.Errorf("Error reading config file: %v", err)
 	}
+
+	bt := &Saltbeat{
+		done:   make(chan struct{}),
+		config: c,
+		messages: make(chan map[string]interface{}),
+	}
+	return bt, nil
 }
 
-/// *** Beater interface methods ***///
-
-func (bt *Saltbeat) Config(b *beat.Beat) error {
-	logp.Debug("beater", "Configuring beater")
-
-	// Load beater beatConfig
-	err := b.RawConfig.Unpack(&bt.beatConfig)
-	if err != nil {
-		return fmt.Errorf("Error reading config file: %v", err)
-	}
-
-	return nil
+// Crazy way to detect if connections if REALY closed ( looks like  calling bt.socketConnection.Close() doesn't mean that connections is realy closed)
+func Read(c *net.UnixConn, buffer []byte) bool {
+    _ , err := c.Read(buffer)
+    if err != nil {
+		c.Close()
+		logp.Debug("message", "Error in read data from UnixConn, connections is closed.")
+        return false
+    }
+	logp.Debug("message", "Connection to UnixConn is still opened.")
+    return true
 }
 
-func (bt *Saltbeat) Setup(b *beat.Beat) error {
-	logp.Debug("beater", "Setting up beater")
-	// Setting default period if not set
-	if bt.beatConfig.Saltbeat.MasterEventPub == "" {
-		bt.beatConfig.Saltbeat.MasterEventPub = "/var/run/salt/master/master_event_pub.ipc"
-	}
-	bt.client = b.Publisher.Connect()
-
+func (bt *Saltbeat) socketReconnect() {
 	var err error
-	logp.Info("Opening socket %s", bt.beatConfig.Saltbeat.MasterEventPub)
-	bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.beatConfig.Saltbeat.MasterEventPub, "unix"})
-	if err != nil {
-		return err
-	}
-	err = bt.socketConnection.CloseWrite()
-	if err != nil {
-		return err
-	}
+	var retryCounter int
+	var connectAlive bool
+	bt.socketConnection.Close()
 
-	go func() {
-		var err error
-		var handle codec.MsgpackHandle
-		//handle.MapType = reflect.TypeOf(map[string]interface{}(nil))
-		for {
-			logp.Debug("message", "Waiting for message")
-			message_decoder := codec.NewDecoder(bt.socketConnection, &handle)
-			var message map[interface{}]interface{}
-			err = message_decoder.Decode(&message)
-			if err != nil {
-				if err.Error() == "EOF" || err.Error() == "unexpected EOF" {
-					logp.Debug("message", "EOF, reconnecting")
-					bt.socketConnection.Close()
-
-					bt.socketConnection, err = net.DialUnix("unix", nil, &net.UnixAddr{bt.beatConfig.Saltbeat.MasterEventPub, "unix"})
-					if err != nil {
-						return
-					}
-					err = bt.socketConnection.CloseWrite()
-					if err != nil {
-						return
-					}
-				} else {
-					logp.WTF(err.Error())
-				}
-			} else {
-				logp.Debug("message", "Message read")
-
-				bt.messages <- message
-			}
-		}
-	}()
-
-	return nil
-}
-
-func parseMessage(handle codec.MsgpackHandle, message map[interface{}]interface{}) (string, map[string]interface{}) {
-	body := message["body"].([]byte)
-	newline := byte(10)
-	splitted := bytes.SplitN(body, []byte{newline, newline}, 2)
-
-	tag := string(splitted[0])
-	logp.Debug("message", "Message tag is %s", tag)
-
-	payload_bytes := splitted[1]
-	payload_decoder := codec.NewDecoderBytes(payload_bytes, &handle)
-
-	var payload map[string]interface{}
-	err := payload_decoder.Decode(&payload)
-	if err != nil {
-		logp.WTF(err.Error())
-	}
-
-	if _, ok := payload["fun_args"]; ok {
-		b, _ := json.MarshalIndent(payload["fun_args"], "", "  ")
-		if strings.Replace(string(b), " ", "", -1) != "" {
-			jsonStrings := strings.Split(string(b), "\n")
-
-			if len(jsonStrings) > 1 {
-				var newJsonString bytes.Buffer
-				inObject := false
-
-				for index, line := range jsonStrings {
-					if index == 0 {
-						newJsonString.WriteString("{\n")
-						continue
-					} else if index == len(jsonStrings)-1 {
-						newJsonString.WriteString("}\n")
-						continue
-					}
-
-					if strings.Replace(line, " ", "", -1) == "{" {
-						inObject = true
-						continue
-					}
-
-					if strings.Replace(line, " ", "", -1) == "}" && inObject {
-						inObject = false
-						continue
-					}
-
-					if !inObject {
-						newJsonString.WriteString("  \"arg")
-						newJsonString.WriteString(strconv.Itoa(index))
-						newJsonString.WriteString("\": ")
-						newJsonString.WriteString(line)
-						newJsonString.WriteString("\n")
-					} else {
-						newJsonString.WriteString(line)
-						newJsonString.WriteString("\n")
-					}
-				}
-
-				var newArg interface{}
-				json.Unmarshal(newJsonString.Bytes(), &newArg)
-
-				payload["fun_args"] = newArg
-			}
+	for {
+		buffer := make([]byte, 2048)
+		connectAlive = Read(bt.socketConnection,buffer)
+		if connectAlive == false {
+			break
 		}
 	}
-
-	if _, ok := payload["arg"]; ok {
-		b, _ := json.MarshalIndent(payload["arg"], "", "  ")
-		if strings.Replace(string(b), " ", "", -1) != "" {
-			jsonStrings := strings.Split(string(b), "\n")
-
-			if len(jsonStrings) > 1 {
-				var newJsonString bytes.Buffer
-				inObject := false
-
-				for index, line := range jsonStrings {
-					if index == 0 {
-						newJsonString.WriteString("{\n")
-						continue
-					} else if index == len(jsonStrings)-1 {
-						newJsonString.WriteString("}\n")
-						continue
-					}
-
-					if strings.Replace(line, " ", "", -1) == "{" {
-						inObject = true
-						continue
-					}
-
-					if strings.Replace(line, " ", "", -1) == "}" && inObject {
-						inObject = false
-						continue
-					}
-
-					if !inObject {
-						newJsonString.WriteString("  \"arg")
-						newJsonString.WriteString(strconv.Itoa(index))
-						newJsonString.WriteString("\": ")
-						newJsonString.WriteString(line)
-						newJsonString.WriteString("\n")
-					} else {
-						newJsonString.WriteString(line)
-						newJsonString.WriteString("\n")
-					}
-				}
-
-				var newArg interface{}
-				json.Unmarshal(newJsonString.Bytes(), &newArg)
-
-				payload["arg"] = newArg
+	for {
+		logp.Debug("message", "Sleeping for 2 seconds before DialUnix")
+		time.Sleep(2 * time.Second)
+		bt.socketConnection, err = net.DialUnix("unix", nil,&net.UnixAddr{Name: bt.config.MasterEventPub, Net: "unix"})
+		buffer := make([]byte, 2048)
+		connectAlive = Read(bt.socketConnection,buffer)
+		if connectAlive {
+			logp.Debug("message", "I can read from socket after reconnect")
+		} else {
+			logp.Debug("message", "Can't read from socket after reconnect")
+		}
+		if err != nil {
+			logp.Err(fmt.Sprintf("Error: %s ,reconnecting to socket, %d attempts left,sleeping for 1 second before next attempt", err.Error(), 5 - retryCounter))
+			retryCounter += 1
+			if retryCounter > 6 {
+				logp.Err("The maximum number of reconnect attempts has been reached")
+				logp.WTF(err.Error())
 			}
+			time.Sleep(1 * time.Second)
+		} else {
+			logp.Debug("message", "Reconnecting is OK")
+			break	
 		}
 	}
-
-	// Clear the return so we don't show passwords
-	payload["return"] = ""
-
-	logp.Debug("message", "Decoded payload is %s", payload)
-	return tag, payload
 }
 
 func (bt *Saltbeat) Run(b *beat.Beat) error {
+	var err error
+
+	go func ()  (error){
+		logp.Info(fmt.Sprintf("Connecting to socket %s", bt.config.MasterEventPub))
+		var err error
+		var fullMessage map[string]interface{}
+
+		logp.Info("Opening socket %s", bt.config.MasterEventPub)
+		bt.socketConnection, err =  net.DialUnix("unix", nil,&net.UnixAddr{Name: bt.config.MasterEventPub, Net: "unix"})
+		if err != nil {
+			return err
+		}
+		for {
+			logp.Debug("message", "Waiting for message")
+			dec := msgpack.NewDecoder(bt.socketConnection) 
+			err = dec.Decode(&fullMessage)
+			if err != nil && err == io.EOF{
+				bt.socketConnection.Close()
+				logp.Err(fmt.Sprintf("Error: %s ,reconnecting to socket", err.Error()))
+				bt.socketReconnect()
+			} else {
+				logp.Debug("message", "Message read")
+				bt.messages <- fullMessage	
+			}
+		}
+	}()
+	
 	logp.Info("saltbeat is running! Hit CTRL-C to stop it.")
 
-	var err error
-	var handle codec.MsgpackHandle
-	handle.MapType = reflect.TypeOf(map[string]interface{}(nil))
-	handle.RawToString = true
+	bt.client, err = b.Publisher.Connect()
+
+	if err != nil {
+		return err
+	}
 
 	for {
 		select {
-		case <-bt.done:
-			return nil
-		case message := <-bt.messages:
-			tag, payload := parseMessage(handle, message)
-			logp.Debug("publish", "Publishing event")
-
-			event := common.MapStr{
-				"@timestamp": common.Time(time.Now()),
-				"type":       b.Name,
-				"tag":        tag,
-				"payload":    payload,
-			}
-
-			ok := bt.client.PublishEvent(event)
-			if !ok {
-				logp.Debug("publish", "Cannot publish event")
-				logp.WTF(err.Error())
-			}
-			logp.Debug("publish", "Published")
+			case <-bt.done:
+				return nil
+			case message := <-bt.messages:
+				var data map[string]interface{}
+				skipMessage := false
+				resultList := strings.SplitN(string(message["body"].([]uint8)), "\n\n", 2)
+				tag := resultList[0]
+				for i, s := range bt.config.tagBlackList {
+					if strings.Contains(tag, s){
+						skipMessage = true
+						break
+					}  
+				}
+				if skipMessage{
+					continue
+				}
+				byteResult := []byte(resultList[1])
+				_ = msgpack.Unmarshal(byteResult, &data)
+				// Clear the return so we don't show passwords
+				logp.Debug("message", fmt.Sprintf("return was message: \ndata: %s\n", data["return"]))
+				data["return"] = ""
+				// Drop public keys ( garbage )
+				data["pub"] = ""
+				logp.Debug("message", fmt.Sprintf("Decoded message: (Tag : %s \ndata: %s\n", tag, data))
+				
+				logp.Debug("publish", "Publishing event")
+				event := beat.Event{
+					Timestamp: time.Now(),
+					Fields: common.MapStr{
+						"type":    b.Info.Name,
+						"tag":        tag,
+						"data":    data,
+					},
+				}
+				bt.client.Publish(event)
 		}
 	}
 }
 
-func (bt *Saltbeat) Cleanup(b *beat.Beat) error {
-	logp.Info("Closing socket %s", bt.beatConfig.Saltbeat.MasterEventPub)
+func (bt Saltbeat) Cleanup(b *beat.Beat) error {
+	logp.Info("Closing socket %s", bt.config.MasterEventPub)
 	bt.socketConnection.Close()
 	return nil
 }
 
-func (bt *Saltbeat) Stop() {
+func (bt Saltbeat) Stop() {
 	close(bt.done)
 	close(bt.messages)
 }

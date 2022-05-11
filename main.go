@@ -1,16 +1,18 @@
 package main
 
 import (
-	"github.com/elastic/beats/libbeat/beat"
-	"github.com/elastic/beats/libbeat/logp"
-	"github.com/martinhoefling/saltbeat/beater"
 	"os"
+
+	"github.com/elastic/beats/v7/libbeat/cmd"
+	"github.com/elastic/beats/v7/libbeat/cmd/instance"
+
+	"github.com/GloomyDay/saltbeat/beater"
 )
 
+var RootCmd = cmd.GenRootCmdWithSettings(beater.New, instance.Settings{Name: "saltbeat"})
+
 func main() {
-	logp.Debug("main", "Starting saltbeat")
-	err := beat.Run("saltbeat", "", beater.New())
-	if err != nil {
+	if err := RootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }

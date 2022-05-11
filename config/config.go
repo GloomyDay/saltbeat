@@ -1,12 +1,15 @@
-// Config is put into a different package to prevent cyclic imports in case
-// it is needed in several locations
-
 package config
 
+import "time"
+
 type Config struct {
-	Saltbeat SaltbeatConfig
+	Period           time.Duration `config:"period"`
+	MasterEventPub string        `config:"master_event_pub"`
+	tagBlackList []string        `config:"tag_black_list"`
 }
 
-type SaltbeatConfig struct {
-	MasterEventPub string `config:"master_event_pub"`
+var DefaultConfig = Config{
+	Period:           1 * time.Second,
+	MasterEventPub: "/var/run/salt/master/master_event_pub.ipc",
+	tagBlackList: make([]string, 0),
 }
