@@ -29,7 +29,8 @@ saltbeat:
 #-------------------------- Elasticsearch output ------------------------------
 output.elasticsearch:
   # Array of hosts to connect to.
-  hosts: ["http://srv-log-crd01.srv.cian.int:9200"]
+  # hosts: ["http://my.elasticsearch.host.com:9200"]
+  ## TEMPLATE MAY BE BROKEN , tested without template
   # Template name. By default the template name is saltbeat.
   # template.name: "saltbeat"
 
