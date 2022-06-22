@@ -136,8 +136,14 @@ func (bt *Saltbeat) Run(b *beat.Beat) error {
 				return nil
 			case message := <-bt.messages:
 				var data map[string]interface{}
+				var stringMsg string
 				skipMessage := false
-				resultList := strings.SplitN(string(message["body"].([]uint8)), "\n\n", 2)
+				if _,ok := message["body"].([]uint8); !ok {
+					stringMsg = message["body"].(string)
+				} else {
+					stringMsg = string(message["body"].([]uint8))
+				}
+				resultList := strings.SplitN(stringMsg, "\n\n", 2)
 				tag := resultList[0]
 				for _, s := range bt.config.TagBlackList {
 					if strings.Contains(tag, s){
